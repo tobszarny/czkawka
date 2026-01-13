@@ -332,8 +332,8 @@ export component MainWindow inherits Window {
         x: parent.x + (root.width - self.popup_width) / 2.0;
         y: parent.y + (root.height - self.popup_height) / 2.0;
 
-        confirm(regex) => {
-            Callabler.select_items_by_regex(regex);
+        confirm(regex, all_but_one) => {
+            Callabler.select_items_by_regex(regex, all_but_one);
         }
     }
 

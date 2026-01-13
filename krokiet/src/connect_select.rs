@@ -36,7 +36,7 @@ pub(crate) fn connect_select(app: &MainWindow) {
 
 pub(crate) fn connect_select_by_regex(app: &MainWindow) {
     let a = app.as_weak();
-    app.global::<Callabler>().on_select_items_by_regex(move |regex_pattern| {
+    app.global::<Callabler>().on_select_items_by_regex(move |regex_pattern, all_but_one| {
         let app = a.upgrade().expect("Failed to upgrade app :(");
         let active_tab = app.global::<GuiState>().get_active_tab();
         let current_model = active_tab.get_tool_model(&app);
@@ -47,7 +47,7 @@ pub(crate) fn connect_select_by_regex(app: &MainWindow) {
 
         match Regex::new(&regex_pattern) {
             Ok(regex) => {
-                let (checked_items, unchecked_items, new_model) = select_by_path_regex(&current_model, active_tab, &regex);
+                let (checked_items, unchecked_items, new_model) = select_by_path_regex(&current_model, active_tab, &regex, all_but_one);
                 active_tab.set_tool_model(&app, new_model);
                 change_number_of_enabled_items(&app, active_tab, checked_items as i64 - unchecked_items as i64);
             }
@@ -223,7 +223,7 @@ fn select_by_size_date(model: &ModelRc<MainListModel>, active_tab: ActiveTab, bi
     (checked_items, 0, ModelRc::new(VecModel::from(old_data)))
 }
 
-fn select_by_path_regex(model: &ModelRc<MainListModel>, active_tab: ActiveTab, regex: &Regex) -> SelectionResult {
+fn select_by_path_regex(model: &ModelRc<MainListModel>, active_tab: ActiveTab, regex: &Regex, all_but_one: bool) -> SelectionResult {
     let mut checked_items = 0;
 
     let is_header_mode = active_tab.get_is_header_mode();
@@ -232,22 +232,44 @@ fn select_by_path_regex(model: &ModelRc<MainListModel>, active_tab: ActiveTab, r
     let mut old_data = model.iter().collect::<Vec<_>>();
     let headers_idx = find_header_idx_and_deselect_all(&mut old_data);
     let path_idx = active_tab.get_str_path_idx();
+    let name_idx = active_tab.get_str_name_idx();
 
     for i in 0..(headers_idx.len() - 1) {
-        let mut matched_item_idx = None;
+        let mut matched_indices = Vec::new();
+        
+        // Find all matching items in this group
         for j in (headers_idx[i] + 1)..headers_idx[i + 1] {
             let str_data = old_data[j].val_str.iter().collect::<Vec<_>>();
-            if regex.is_match(&str_data[path_idx]) {
-                matched_item_idx = Some(j);
-                break;
+            
+            // Construct full filepath: path + "/" + name
+            let full_path = if name_idx < str_data.len() && !str_data[name_idx].is_empty() {
+                format!("{}/{}", str_data[path_idx], str_data[name_idx])
+            } else {
+                // If there's no filename (e.g., folder-only modes), just use the path
+                str_data[path_idx].to_string()
+            };
+            
+            if regex.is_match(&full_path) {
+                matched_indices.push(j);
             }
         }
 
-        if let Some(idx) = matched_item_idx {
-            if !old_data[idx].checked {
-                checked_items += 1;
+        // Select items based on the all_but_one flag
+        if !matched_indices.is_empty() {
+            let indices_to_select = if all_but_one {
+                // Skip the first matching item, select the rest
+                &matched_indices[1..]
+            } else {
+                // Select all matching items
+                &matched_indices[..]
+            };
+
+            for &idx in indices_to_select {
+                if !old_data[idx].checked {
+                    checked_items += 1;
+                }
+                old_data[idx].checked = true;
             }
-            old_data[idx].checked = true;
         }
     }
 

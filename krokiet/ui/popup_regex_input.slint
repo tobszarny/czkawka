@@ -1,4 +1,4 @@
-import { Button, LineEdit } from "std-widgets.slint";
+import { Button, LineEdit, CheckBox } from "std-widgets.slint";
 import { Translations } from "translations.slint";
 import { PopupBase } from "popup_base.slint";
 import { Settings } from "settings.slint";
@@ -6,11 +6,12 @@ import { FontSizes } from "fonts.slint";
 
 export component PopupRegexInput inherits Rectangle {
     out property <length> popup_width: 500px;
-    out property <length> popup_height: 200px;
+    out property <length> popup_height: 260px;
     callback show_popup();
-    callback confirm(string);
+    callback confirm(string, bool);
 
     property <string> regex_text: Settings.last_regex_pattern;
+    property <bool> all_but_one: Settings.regex_all_but_one_from_group;
 
     popup_window := PopupBase {
         width: popup_width;
@@ -31,16 +32,23 @@ export component PopupRegexInput inherits Rectangle {
                 text <=> regex_text;
                 placeholder-text: Translations.popup_regex_input_placeholder_text;
             }
+
+            CheckBox {
+                text: Translations.popup_regex_all_but_one_text;
+                checked <=> all_but_one;
+            }
         }
 
         ok_clicked => {
             Settings.last_regex_pattern = root.regex_text;
-            root.confirm(root.regex_text);
+            Settings.regex_all_but_one_from_group = root.all_but_one;
+            root.confirm(root.regex_text, root.all_but_one);
         }
     }
 
     show_popup() => {
         regex_text = Settings.last_regex_pattern;
+        all_but_one = Settings.regex_all_but_one_from_group;
         popup_window.show();
     }
 }
