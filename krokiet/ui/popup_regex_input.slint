@@ -1,0 +1,46 @@
+import { Button, LineEdit } from "std-widgets.slint";
+import { Translations } from "translations.slint";
+import { PopupBase } from "popup_base.slint";
+import { Settings } from "settings.slint";
+import { FontSizes } from "fonts.slint";
+
+export component PopupRegexInput inherits Rectangle {
+    out property <length> popup_width: 500px;
+    out property <length> popup_height: 200px;
+    callback show_popup();
+    callback confirm(string);
+
+    property <string> regex_text: Settings.last_regex_pattern;
+
+    popup_window := PopupBase {
+        width: popup_width;
+        height: popup_height;
+        title_text <=> Translations.popup_regex_input_title_text;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 10px;
+
+            Text {
+                text: Translations.popup_regex_input_message_text;
+                font-size: FontSizes.normal;
+                wrap: TextWrap.word-wrap;
+            }
+
+            LineEdit {
+                text <=> regex_text;
+                placeholder-text: Translations.popup_regex_input_placeholder_text;
+            }
+        }
+
+        ok_clicked => {
+            Settings.last_regex_pattern = root.regex_text;
+            root.confirm(root.regex_text);
+        }
+    }
+
+    show_popup() => {
+        regex_text = Settings.last_regex_pattern;
+        popup_window.show();
+    }
+}

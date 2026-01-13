@@ -20,6 +20,7 @@ import { PopupSortResults } from "popup_sort.slint";
 import { PopupActionConfirm } from "popup_action_confirm.slint";
 import { PopupOptimize } from "popup_optimize.slint";
 import { PopupCleanExif } from "popup_clean_exif.slint";
+import { PopupRegexInput } from "popup_regex_input.slint";
 import { ToolSettings } from "tool_settings.slint";
 import { Translations } from "translations.slint";
 
@@ -40,6 +41,7 @@ export component MainWindow inherits Window {
     // Opening popup is done via Rust call
     callback request_setup_action_popup(PopupRequest); // When opening popup we need to setup data in it, Slint -> Rust
     callback show_action_popup(PopupRequest, string); // After setup, we can show popup - Rust -> Slint - string is choosed folder - to avoid having multiple callbacks, string will be empty for things that do not need it
+    callback show_regex_input_popup();
 
     title <=> Translations.main_window_title_text;
 
@@ -223,6 +225,9 @@ export component MainWindow inherits Window {
         y: parent.y + y_offset - self.all_items_height - 5px;
         height: root.height;
         width: root.width;
+        show_regex_popup() => {
+            root.show_regex_input_popup();
+        }
     }
 
     delete_popup_window := PopupDelete {
@@ -313,10 +318,22 @@ export component MainWindow inherits Window {
         confirmation_text: Translations.softlink_confirmation_text;
 
         x: parent.x + (root.width - self.popup_width) / 2.0;
-        y: parent.y + (parent.height - self.popup_height) / 2.0;
+        y: parent.y + (root.height - self.popup_height) / 2.0;
 
         action_confirmed => {
             Callabler.softlink_items();
+        }
+    }
+
+    regex_popup_window := PopupRegexInput {
+        height: root.height;
+        width: root.width;
+
+        x: parent.x + (root.width - self.popup_width) / 2.0;
+        y: parent.y + (root.height - self.popup_height) / 2.0;
+
+        confirm(regex) => {
+            Callabler.select_items_by_regex(regex);
         }
     }
 
@@ -341,6 +358,10 @@ export component MainWindow inherits Window {
         sort_popup_window.close_popup();
         select_popup_window.show_popup();
         select_popup_window.close_popup();
+    }
+
+    show_regex_input_popup() => {
+        regex_popup_window.show_popup();
     }
 
     show_action_popup(request, folder_name) => {

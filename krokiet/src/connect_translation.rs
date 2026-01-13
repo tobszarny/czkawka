@@ -447,6 +447,7 @@ pub(crate) fn translate_select_mode(select_mode: SelectMode) -> SharedString {
         SelectMode::SelectTheSmallestResolution => flk!("selection_the_smallest_resolution").into(),
         SelectMode::SelectNewest => flk!("selection_newest").into(),
         SelectMode::SelectOldest => flk!("selection_oldest").into(),
+        SelectMode::SelectByPathRegex => flk!("selection_by_path_regex").into(),
     }
 }
 

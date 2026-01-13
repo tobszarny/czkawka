@@ -30,7 +30,7 @@ use crate::connect_progress_receiver::connect_progress_gathering;
 use crate::connect_row_selection::connect_row_selections;
 use crate::connect_save::connect_save;
 use crate::connect_scan::connect_scan_button;
-use crate::connect_select::{connect_select, connect_showing_proper_select_buttons};
+use crate::connect_select::{connect_select, connect_select_by_regex, connect_showing_proper_select_buttons};
 use crate::connect_show_confirmation::connect_show_confirmation;
 use crate::connect_show_preview::connect_show_preview;
 use crate::connect_size_of_config_cache::connect_size_of_config_cache;
@@ -117,6 +117,7 @@ fn main() {
     connect_translations(&app);
     connect_changing_settings_preset(&app);
     connect_select(&app);
+    connect_select_by_regex(&app);
     connect_showing_proper_select_buttons(&app);
     connect_move(&app, progress_sender.clone(), stop_flag.clone());
     connect_rename(&app, progress_sender.clone(), stop_flag.clone());

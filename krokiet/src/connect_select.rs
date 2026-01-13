@@ -1,3 +1,4 @@
+use regex::Regex;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::common::connect_i32_into_u64;
@@ -26,9 +27,34 @@ pub(crate) fn connect_select(app: &MainWindow) {
             SelectMode::SelectTheSmallestResolution => select_by_resolution(&current_model, active_tab, false),
             SelectMode::SelectNewest => select_by_size_date(&current_model, active_tab, true, false),
             SelectMode::SelectOldest => select_by_size_date(&current_model, active_tab, false, false),
+            SelectMode::SelectByPathRegex => deselect_all(&current_model),
         };
         active_tab.set_tool_model(&app, new_model);
         change_number_of_enabled_items(&app, active_tab, checked_items as i64 - unchecked_items as i64);
+    });
+}
+
+pub(crate) fn connect_select_by_regex(app: &MainWindow) {
+    let a = app.as_weak();
+    app.global::<Callabler>().on_select_items_by_regex(move |regex_pattern| {
+        let app = a.upgrade().expect("Failed to upgrade app :(");
+        let active_tab = app.global::<GuiState>().get_active_tab();
+        let current_model = active_tab.get_tool_model(&app);
+
+        if regex_pattern.trim().is_empty() {
+            return;
+        }
+
+        match Regex::new(&regex_pattern) {
+            Ok(regex) => {
+                let (checked_items, unchecked_items, new_model) = select_by_path_regex(&current_model, active_tab, &regex);
+                active_tab.set_tool_model(&app, new_model);
+                change_number_of_enabled_items(&app, active_tab, checked_items as i64 - unchecked_items as i64);
+            }
+            Err(e) => {
+                log::error!("Invalid regex pattern: {e}");
+            }
+        }
     });
 }
 
@@ -51,6 +77,7 @@ fn set_select_buttons(app: &MainWindow) {
             SelectMode::SelectNewest,
             SelectMode::SelectTheSmallestSize,
             SelectMode::SelectTheBiggestSize,
+            SelectMode::SelectByPathRegex,
         ],
         ActiveTab::SimilarImages => vec![
             SelectMode::SelectOldest,
@@ -59,6 +86,7 @@ fn set_select_buttons(app: &MainWindow) {
             SelectMode::SelectTheBiggestSize,
             SelectMode::SelectTheSmallestResolution,
             SelectMode::SelectTheBiggestResolution,
+            SelectMode::SelectByPathRegex,
         ],
         ActiveTab::EmptyFolders
         | ActiveTab::BigFiles
@@ -189,6 +217,37 @@ fn select_by_size_date(model: &ModelRc<MainListModel>, active_tab: ActiveTab, bi
                 checked_items += 1;
             }
             old_data[min_item_idx].checked = true;
+        }
+    }
+
+    (checked_items, 0, ModelRc::new(VecModel::from(old_data)))
+}
+
+fn select_by_path_regex(model: &ModelRc<MainListModel>, active_tab: ActiveTab, regex: &Regex) -> SelectionResult {
+    let mut checked_items = 0;
+
+    let is_header_mode = active_tab.get_is_header_mode();
+    assert!(is_header_mode);
+
+    let mut old_data = model.iter().collect::<Vec<_>>();
+    let headers_idx = find_header_idx_and_deselect_all(&mut old_data);
+    let path_idx = active_tab.get_str_path_idx();
+
+    for i in 0..(headers_idx.len() - 1) {
+        let mut matched_item_idx = None;
+        for j in (headers_idx[i] + 1)..headers_idx[i + 1] {
+            let str_data = old_data[j].val_str.iter().collect::<Vec<_>>();
+            if regex.is_match(&str_data[path_idx]) {
+                matched_item_idx = Some(j);
+                break;
+            }
+        }
+
+        if let Some(idx) = matched_item_idx {
+            if !old_data[idx].checked {
+                checked_items += 1;
+            }
+            old_data[idx].checked = true;
         }
     }
 
