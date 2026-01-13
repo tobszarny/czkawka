@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::mem;
-use std::sync::{LazyLock, RwLock, RwLockWriteGuard};
+use std::sync::{LazyLock, Mutex, RwLock, RwLockWriteGuard};
+use std::time::{Duration, Instant};
 
 use czkawka_core::TOOLS_NUMBER;
 use log::{debug, error, trace};
@@ -11,6 +12,58 @@ use crate::common::{connect_i32_into_u64, split_u64_into_i32s};
 use crate::{ActiveTab, Callabler, GuiState, MainListModel, MainWindow};
 
 const SELECTED_ROWS_LIMIT: usize = 1000;
+
+// Track last header click to detect double-clicks manually (workaround for Slint issue)
+static LAST_HEADER_CLICK: LazyLock<Mutex<Option<(usize, Instant)>>> = LazyLock::new(|| Mutex::new(None));
+const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
+
+#[derive(Debug)]
+struct GroupRange {
+    header_idx: usize,
+    start_idx: usize,
+    end_idx: usize,
+    item_count: usize,
+}
+
+impl GroupRange {
+    fn is_empty(&self) -> bool {
+        self.item_count == 0
+    }
+}
+
+fn find_group_range(model: &ModelRc<MainListModel>, header_idx: usize) -> Option<GroupRange> {
+    let model_count = model.row_count();
+
+    if header_idx >= model_count {
+        return None;
+    }
+
+    let header_data = model.row_data(header_idx)?;
+    if !header_data.header_row {
+        trace!("Row at index {} is not a header row", header_idx);
+        return None;
+    }
+
+    let start_idx = header_idx + 1;
+    let mut end_idx = header_idx + 1;
+
+    while end_idx < model_count {
+        let row = model.row_data(end_idx).expect("Failed to get row data");
+        if row.header_row {
+            break;
+        }
+        end_idx += 1;
+    }
+
+    let item_count = end_idx - start_idx;
+
+    Some(GroupRange {
+        header_idx,
+        start_idx,
+        end_idx,
+        item_count,
+    })
+}
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct SelectionData {
@@ -217,58 +270,10 @@ mod opener {
 }
 mod selection {
     use super::{
-        debug, get_write_selection_lock, reverse_selection_of_item_with_id, row_select_items_with_shift, rows_deselect_all_by_mode, rows_reverse_checked_selection,
-        rows_select_all_by_mode, trace, Callabler, ComponentHandle, GuiState, MainListModel, MainWindow, Model, ModelRc, SelectionData, VecModel, SELECTED_ROWS_LIMIT,
+        debug, find_group_range, get_write_selection_lock, reverse_selection_of_item_with_id, row_select_items_with_shift, rows_deselect_all_by_mode, rows_reverse_checked_selection,
+        rows_select_all_by_mode, trace, Callabler, ComponentHandle, GroupRange, GuiState, LAST_HEADER_CLICK, MainListModel, MainWindow, Model, ModelRc, SelectionData, VecModel, SELECTED_ROWS_LIMIT,
     };
     use crate::connect_row_selection::checker::change_number_of_enabled_items;
-
-    #[derive(Debug)]
-    struct GroupRange {
-        header_idx: usize,
-        start_idx: usize,
-        end_idx: usize,
-        item_count: usize,
-    }
-
-    impl GroupRange {
-        fn is_empty(&self) -> bool {
-            self.item_count == 0
-        }
-    }
-
-    fn find_group_range(model: &ModelRc<MainListModel>, header_idx: usize) -> Option<GroupRange> {
-        let model_count = model.row_count();
-
-        if header_idx >= model_count {
-            return None;
-        }
-
-        let header_data = model.row_data(header_idx)?;
-        if !header_data.header_row {
-            trace!("Row at index {} is not a header row", header_idx);
-            return None;
-        }
-
-        let start_idx = header_idx + 1;
-        let mut end_idx = header_idx + 1;
-
-        while end_idx < model_count {
-            let row = model.row_data(end_idx).expect("Failed to get row data");
-            if row.header_row {
-                break;
-            }
-            end_idx += 1;
-        }
-
-        let item_count = end_idx - start_idx;
-
-        Some(GroupRange {
-            header_idx,
-            start_idx,
-            end_idx,
-            item_count,
-        })
-    }
 
     fn select_range(selection: &mut SelectionData, model: &ModelRc<MainListModel>, range: &GroupRange) -> Option<ModelRc<MainListModel>> {
         if range.is_empty() {
@@ -293,14 +298,17 @@ mod selection {
             .collect();
         
         let checked_in_group = group_items.iter().filter(|(_, row)| row.checked).count();
+        let selected_in_group = group_items.iter().filter(|(_, row)| row.selected_row).count();
         let total_in_group = group_items.len();
         let all_checked = checked_in_group == total_in_group && total_in_group > 0;
         let should_select = !all_checked; // Toggle behavior
         
-        debug!("[REPLACE_MODEL] {} group items - {} items (checked: {}/{}, all_checked: {})", 
+        debug!("[REPLACE_MODEL] {} group items - {} items (checked: {}/{}, selected: {}/{}, all_checked: {})", 
                if should_select { "selecting" } else { "deselecting" }, 
                range.item_count,
                checked_in_group,
+               total_in_group,
+               selected_in_group,
                total_in_group,
                all_checked);
         
@@ -312,18 +320,20 @@ mod selection {
                 if (range.start_idx..range.end_idx).contains(&idx) && !row.header_row {
                     if should_select {
                         // Select and check items in the group
-                        if !row.selected_row {
-                            debug!("Marking row {} as selected and checked", idx);
-                        }
+                        let was_checked = row.checked;
                         row.selected_row = true;
                         row.checked = true;
+                        if !was_checked {
+                            debug!("Marking row {} as selected and checked (was: checked={}, selected={})", idx, was_checked, row.selected_row);
+                        }
                     } else {
                         // Deselect and uncheck items in the group
-                        if row.selected_row {
-                            debug!("Marking row {} as deselected and unchecked", idx);
-                        }
+                        let was_checked = row.checked;
                         row.selected_row = false;
                         row.checked = false;
+                        if was_checked {
+                            debug!("Marking row {} as deselected and unchecked (was: checked={}, selected={})", idx, was_checked, row.selected_row);
+                        }
                     }
                 }
                 // Keep other rows unchanged
@@ -355,7 +365,14 @@ mod selection {
     pub(crate) fn connect_select_group_items(app: &MainWindow) {
         let a = app.as_weak();
         app.global::<Callabler>().on_row_select_group(move |header_idx| {
-            debug!("Double-clicked on group header at index {}", header_idx);
+            debug!("=== NATIVE DOUBLE-CLICK EVENT RECEIVED === on group header at index {}", header_idx);
+            
+            // Clear the manual double-click tracker since native handler fired
+            if let Ok(mut last_click) = LAST_HEADER_CLICK.lock() {
+                *last_click = None;
+                debug!("Cleared manual double-click tracker (native handler took over)");
+            }
+            
             let app = a.upgrade().expect("Failed to upgrade app :(");
             let active_tab = app.global::<GuiState>().get_active_tab();
             
@@ -444,7 +461,31 @@ mod selection {
 
             // needs to get model again, because it could be replaced
             let model = active_tab.get_tool_model(&app);
-            reverse_selection_of_item_with_id(selection, &model, id as usize);
+            let group_range = reverse_selection_of_item_with_id(selection, &model, id as usize);
+            
+            // Handle manual double-click on header (workaround for Slint issue)
+            if let Some(range) = group_range {
+                debug!("Triggering group selection from manual double-click (reverse_single_unique_item path)");
+                
+                // Get old state before modification
+                let old_checked = model.iter().filter(|r| r.checked).count();
+                
+                if let Some(new_model) = select_range(selection, &model, &range) {
+                    let new_checked = new_model.iter().filter(|r| r.checked).count();
+                    let delta = new_checked as i64 - old_checked as i64;
+                    
+                    debug!("Manual double-click complete: old_checked={}, new_checked={}, delta={}", old_checked, new_checked, delta);
+                    
+                    drop(lock); // Drop lock before UI update
+                    active_tab.set_tool_model(&app, new_model);
+                    
+                    // Update checked items counter
+                    if delta != 0 {
+                        change_number_of_enabled_items(&app, active_tab, delta);
+                    }
+                    return;
+                }
+            }
         });
     }
 
@@ -475,7 +516,25 @@ mod selection {
             let selection = lock.get_mut(&active_tab).expect("Failed to get selection data");
             let model = active_tab.get_tool_model(&app);
 
-            reverse_selection_of_item_with_id(selection, &model, id as usize);
+            let group_range = reverse_selection_of_item_with_id(selection, &model, id as usize);
+            
+            // Handle manual double-click on header (workaround for Slint issue)
+            if let Some(range) = group_range {
+                debug!("Triggering group selection from manual double-click (CTRL+click)");
+                if let Some(new_model) = select_range(selection, &model, &range) {
+                    drop(lock); // Drop lock before UI update
+                    active_tab.set_tool_model(&app, new_model);
+                    
+                    // Update checked items counter
+                    let model_after = active_tab.get_tool_model(&app);
+                    let old_checked = model.iter().filter(|r| r.checked).count();
+                    let new_checked = model_after.iter().filter(|r| r.checked).count();
+                    let delta = new_checked as i64 - old_checked as i64;
+                    if delta != 0 {
+                        change_number_of_enabled_items(&app, active_tab, delta);
+                    }
+                }
+            }
         });
     }
 
@@ -769,14 +828,36 @@ fn rows_select_all_by_replacing_models(selection: &SelectionData, model: &ModelR
 //
 // Reverse selection and selecting
 //
-fn reverse_selection_of_item_with_id(selection: &mut SelectionData, model: &ModelRc<MainListModel>, id: usize) {
+fn reverse_selection_of_item_with_id(selection: &mut SelectionData, model: &ModelRc<MainListModel>, id: usize) -> Option<GroupRange> {
     let mut model_data = model
         .row_data(id)
         .unwrap_or_else(|| panic!("Failed to get row data with id {id}, with model {} items", model.row_count()));
 
     if model_data.header_row {
+        // Check if this is a double-click on a header (workaround for Slint double-click not firing on first attempt)
+        let now = Instant::now();
+        let mut last_click = LAST_HEADER_CLICK.lock().expect("Failed to lock header click tracker");
+        
+        let is_double_click = if let Some((last_idx, last_time)) = *last_click {
+            last_idx == id && now.duration_since(last_time) < DOUBLE_CLICK_THRESHOLD
+        } else {
+            false
+        };
+        
+        if is_double_click {
+            debug!("Detected manual double-click on header row at index {} (workaround)", id);
+            *last_click = None; // Reset so we don't trigger again
+            drop(last_click); // Drop lock before finding range
+            
+            // Trigger group selection
+            return find_group_range(model, id);
+        } else {
+            debug!("Single-click on header row at index {} (waiting for second click)", id);
+            *last_click = Some((id, now));
+        }
+        
         assert!(!model_data.selected_row);
-        return;
+        return None;
     }
 
     let was_selected = model_data.selected_row;
@@ -796,6 +877,8 @@ fn reverse_selection_of_item_with_id(selection: &mut SelectionData, model: &Mode
         }
         selection.number_of_selected_rows += 1;
     }
+    
+    None // Not a header row, no group selection
 }
 
 fn row_select_items_with_shift(selection: &mut SelectionData, model: &ModelRc<MainListModel>, indexes: (usize, usize)) -> Option<ModelRc<MainListModel>> {
@@ -1080,8 +1163,9 @@ mod tests {
             exceeded_limit: false,
         };
 
-        reverse_selection_of_item_with_id(&mut selection, &model, 1);
+        let result = reverse_selection_of_item_with_id(&mut selection, &model, 1);
 
+        assert!(result.is_none()); // Not a header row
         assert!(!model.row_data(0).unwrap().selected_row);
         assert!(model.row_data(1).unwrap().selected_row);
         assert!(!model.row_data(2).unwrap().selected_row);
@@ -1101,7 +1185,7 @@ mod tests {
             exceeded_limit: false,
         };
 
-        reverse_selection_of_item_with_id(&mut selection, &model, 1);
+        let result = reverse_selection_of_item_with_id(&mut selection, &model, 1);
 
         assert!(!model.row_data(1).unwrap().selected_row);
         assert_eq!(selection.selected_rows, vec![2]);
