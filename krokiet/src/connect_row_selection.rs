@@ -119,6 +119,7 @@ impl Eq for ActiveTab {}
 pub(crate) fn connect_row_selections(app: &MainWindow) {
     initialize_selection_struct();
 
+    selection::connect_select_group_items(app);
     selection::connect_select_all_rows(app); // CTRL + A
     selection::reverse_single_unique_item(app); // LMB
     selection::reverse_checked_on_selection(app); // Space
@@ -132,7 +133,7 @@ pub(crate) fn connect_row_selections(app: &MainWindow) {
 }
 
 mod opener {
-    use super::{Callabler, ComponentHandle, GuiState, MainWindow, Model, debug, error, get_write_selection_lock};
+    use super::{debug, error, get_write_selection_lock, Callabler, ComponentHandle, GuiState, MainWindow, Model};
 
     pub(crate) fn connect_on_open_item(app: &MainWindow) {
         app.global::<Callabler>().on_open_item(move |path| {
@@ -216,10 +217,196 @@ mod opener {
 }
 mod selection {
     use super::{
-        Callabler, ComponentHandle, GuiState, MainWindow, Model, get_write_selection_lock, reverse_selection_of_item_with_id, row_select_items_with_shift,
-        rows_deselect_all_by_mode, rows_reverse_checked_selection, rows_select_all_by_mode, trace,
+        debug, get_write_selection_lock, reverse_selection_of_item_with_id, row_select_items_with_shift, rows_deselect_all_by_mode, rows_reverse_checked_selection,
+        rows_select_all_by_mode, trace, Callabler, ComponentHandle, GuiState, MainListModel, MainWindow, Model, ModelRc, SelectionData, VecModel, SELECTED_ROWS_LIMIT,
     };
     use crate::connect_row_selection::checker::change_number_of_enabled_items;
+
+    #[derive(Debug)]
+    struct GroupRange {
+        header_idx: usize,
+        start_idx: usize,
+        end_idx: usize,
+        item_count: usize,
+    }
+
+    impl GroupRange {
+        fn is_empty(&self) -> bool {
+            self.item_count == 0
+        }
+    }
+
+    fn find_group_range(model: &ModelRc<MainListModel>, header_idx: usize) -> Option<GroupRange> {
+        let model_count = model.row_count();
+
+        if header_idx >= model_count {
+            return None;
+        }
+
+        let header_data = model.row_data(header_idx)?;
+        if !header_data.header_row {
+            trace!("Row at index {} is not a header row", header_idx);
+            return None;
+        }
+
+        let start_idx = header_idx + 1;
+        let mut end_idx = header_idx + 1;
+
+        while end_idx < model_count {
+            let row = model.row_data(end_idx).expect("Failed to get row data");
+            if row.header_row {
+                break;
+            }
+            end_idx += 1;
+        }
+
+        let item_count = end_idx - start_idx;
+
+        Some(GroupRange {
+            header_idx,
+            start_idx,
+            end_idx,
+            item_count,
+        })
+    }
+
+    fn select_range(selection: &mut SelectionData, model: &ModelRc<MainListModel>, range: &GroupRange) -> Option<ModelRc<MainListModel>> {
+        if range.is_empty() {
+            trace!("Group range is empty");
+            return None;
+        }
+
+        trace!(
+            "Processing group: header={}, range={}..{}, items={}",
+            range.header_idx,
+            range.start_idx,
+            range.end_idx,
+            range.item_count
+        );
+
+        // Check if all items in the group are already checked
+        // Note: We check 'checked' not 'selected_row' because 'selected_row' can be cleared by the UI
+        let group_items: Vec<_> = model
+            .iter()
+            .enumerate()
+            .filter(|(idx, row)| (range.start_idx..range.end_idx).contains(idx) && !row.header_row)
+            .collect();
+        
+        let checked_in_group = group_items.iter().filter(|(_, row)| row.checked).count();
+        let total_in_group = group_items.len();
+        let all_checked = checked_in_group == total_in_group && total_in_group > 0;
+        let should_select = !all_checked; // Toggle behavior
+        
+        debug!("[REPLACE_MODEL] {} group items - {} items (checked: {}/{}, all_checked: {})", 
+               if should_select { "selecting" } else { "deselecting" }, 
+               range.item_count,
+               checked_in_group,
+               total_in_group,
+               all_checked);
+        
+        let new_model: Vec<_> = model
+            .iter()
+            .enumerate()
+            .map(|(idx, mut row)| {
+                // Only modify rows in this group's range
+                if (range.start_idx..range.end_idx).contains(&idx) && !row.header_row {
+                    if should_select {
+                        // Select and check items in the group
+                        if !row.selected_row {
+                            debug!("Marking row {} as selected and checked", idx);
+                        }
+                        row.selected_row = true;
+                        row.checked = true;
+                    } else {
+                        // Deselect and uncheck items in the group
+                        if row.selected_row {
+                            debug!("Marking row {} as deselected and unchecked", idx);
+                        }
+                        row.selected_row = false;
+                        row.checked = false;
+                    }
+                }
+                // Keep other rows unchanged
+                row
+            })
+            .collect();
+        
+        let actually_selected = new_model.iter().filter(|r| r.selected_row).count();
+        debug!("New model has {} selected rows out of {} total", actually_selected, new_model.len());
+
+        // Update selection tracking
+        if range.item_count > SELECTED_ROWS_LIMIT || selection.exceeded_limit {
+            selection.exceeded_limit = true;
+            selection.selected_rows.clear();
+            selection.number_of_selected_rows = new_model.iter().filter(|row| row.selected_row).count();
+        } else {
+            // Collect all selected row indices
+            selection.selected_rows = new_model
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, row)| if row.selected_row && !row.header_row { Some(idx) } else { None })
+                .collect();
+            selection.number_of_selected_rows = selection.selected_rows.len();
+        }
+
+        Some(ModelRc::new(VecModel::from(new_model)))
+    }
+
+    pub(crate) fn connect_select_group_items(app: &MainWindow) {
+        let a = app.as_weak();
+        app.global::<Callabler>().on_row_select_group(move |header_idx| {
+            debug!("Double-clicked on group header at index {}", header_idx);
+            let app = a.upgrade().expect("Failed to upgrade app :(");
+            let active_tab = app.global::<GuiState>().get_active_tab();
+            
+            let new_model = {
+                let mut lock = get_write_selection_lock();
+                let selection = lock.get_mut(&active_tab).expect("Failed to get selection data");
+                let model = active_tab.get_tool_model(&app);
+
+                match find_group_range(&model, header_idx as usize) {
+                    Some(range) => {
+                        debug!("Found group range: start={}, end={}, count={}", range.start_idx, range.end_idx, range.item_count);
+                        let new_model = select_range(selection, &model, &range);
+                        debug!("Group selection complete, selected count: {}", selection.number_of_selected_rows);
+                        new_model
+                    }
+                    None => {
+                        debug!("Failed to find group range for header at index {}", header_idx);
+                        None
+                    }
+                }
+            }; // Lock is dropped here
+            
+            debug!("After lock dropped, new_model is: {}", if new_model.is_some() { "Some" } else { "None" });
+            if let Some(new_model) = new_model {
+                debug!("Setting new model with updated selections");
+                
+                // Count how many items were newly checked
+                let old_model = active_tab.get_tool_model(&app);
+                let old_checked_count = old_model.iter().filter(|r| r.checked).count();
+                let old_selected_count = old_model.iter().filter(|r| r.selected_row).count();
+                let new_checked_count = new_model.iter().filter(|r| r.checked).count();
+                let new_selected_count = new_model.iter().filter(|r| r.selected_row).count();
+                let newly_checked = new_checked_count as i64 - old_checked_count as i64;
+                
+                debug!("Old model: checked={}, selected={}", old_checked_count, old_selected_count);
+                debug!("New model: checked={}, selected={}", new_checked_count, new_selected_count);
+                debug!("Delta: {} items", newly_checked);
+                
+                active_tab.set_tool_model(&app, new_model);
+                debug!("Model has been set on app");
+                
+                // Update the checked items counter in the UI
+                if newly_checked != 0 {
+                    change_number_of_enabled_items(&app, active_tab, newly_checked);
+                    debug!("Updated checked items counter by {}", newly_checked);
+                }
+            } else {
+                debug!("ERROR: new_model is None, cannot set model!");
+            }
+        });
+    }
 
     pub(crate) fn connect_select_all_rows(app: &MainWindow) {
         let a = app.as_weak();
@@ -315,7 +502,7 @@ mod selection {
 }
 
 pub(crate) mod checker {
-    use super::{ActiveTab, Callabler, ComponentHandle, GuiState, MainWindow, connect_i32_into_u64, split_u64_into_i32s, trace};
+    use super::{connect_i32_into_u64, split_u64_into_i32s, trace, ActiveTab, Callabler, ComponentHandle, GuiState, MainWindow};
 
     pub(crate) fn change_number_of_checked_items(app: &MainWindow) {
         let a = app.as_weak();
@@ -984,7 +1171,6 @@ mod tests {
         };
 
         let (checked_items, unchecked_items, new_model) = rows_reverse_checked_selection(&selection, &model);
-
         assert!(new_model.is_none());
         assert!(model.row_data(0).unwrap().checked);
         assert!(model.row_data(1).unwrap().checked);
