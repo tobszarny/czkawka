@@ -21,6 +21,24 @@ Compilation with `cargo build --release` should produce a working binary, that w
 
 If you have installed new `cargo`, you can easily compile and install it via `cargo install krokiet`
 
+### macOS App Bundle
+
+For macOS users, you can create a native `.app` bundle and distributable `.dmg` disk image:
+
+```bash
+# Build and create the .app bundle
+./misc/macos/build_and_package.sh
+
+# Build and create both .app and .dmg
+./misc/macos/build_and_package.sh --dmg
+```
+
+See [misc/macos/README.md](../misc/macos/README.md) for detailed instructions on creating macOS bundles.
+
+**Requirements for macOS bundling:**
+- `librsvg` (install with: `brew install librsvg`)
+- Xcode Command Line Tools
+
 ## Additional Renderers
 
 By default, only femtovg (OpenGL) and the software renderer are enabled, but you can enable more renderers by compiling the app
