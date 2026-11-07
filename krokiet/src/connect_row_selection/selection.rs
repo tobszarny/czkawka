@@ -10,16 +10,16 @@ use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use crate::connect_row_selection::checker::change_number_of_enabled_items;
 use crate::{ActiveTab, Callabler, GuiState, MainWindow, RowSelectItemsWithShiftRequest, SingleMainListModel};
 
-const SELECTED_ROWS_LIMIT: usize = 1000;
+pub(crate) const SELECTED_ROWS_LIMIT: usize = 1000;
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct SelectionData {
     // Should be always valid
-    number_of_selected_rows: usize,
+    pub(crate) number_of_selected_rows: usize,
     // Needs to be empty, when exceeded limit
-    selected_rows: Vec<usize>,
+    pub(crate) selected_rows: Vec<usize>,
     // If exceeded limit, then we need to reload entire model, because it should be faster that changing each row
-    exceeded_limit: bool,
+    pub(crate) exceeded_limit: bool,
 }
 
 pub(crate) static TOOLS_SELECTION: LazyLock<RwLock<HashMap<ActiveTab, SelectionData>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -106,7 +106,7 @@ pub(crate) fn initialize_selection_struct() {
 //     let selection = TOOLS_SELECTION.get().expect("Selection data is not initialized");
 //     selection.read().expect("Failed to lock selection data")
 // }
-fn get_write_selection_lock() -> RwLockWriteGuard<'static, HashMap<ActiveTab, SelectionData>> {
+pub(crate) fn get_write_selection_lock() -> RwLockWriteGuard<'static, HashMap<ActiveTab, SelectionData>> {
     TOOLS_SELECTION.write().expect("Selection data is not initialized or is poisoned")
 }
 

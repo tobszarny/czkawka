@@ -1,6 +1,7 @@
 pub(crate) mod checker;
 pub(crate) mod clipboard;
 mod context_menu;
+mod group;
 mod opener;
 mod selection;
 
@@ -16,6 +17,7 @@ pub(crate) fn connect_row_selections(app: &MainWindow) {
     selection::reverse_checked_on_selection(app); // Space
     selection::reverse_selection_on_specific_item(app); // CTRL + LMB
     selection::select_items_with_shift(app); // SHIFT + LMB
+    group::connect_select_group_items(app); // Double LMB on group header
     opener::open_provided_item(app);
     opener::open_provided_parent_item(app);
     opener::connect_on_open_item(app);

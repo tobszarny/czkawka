@@ -119,7 +119,9 @@ export component SelectableTableView inherits Rectangle {
                 touch_area := TouchArea {
                     forward-focus: focus_item;
                     double-clicked => {
-                        if (contains_data(idx)) {
+                        if (r.header_row) {
+                            Callabler.row_select_group(idx);
+                        } else if (contains_data(idx)) {
                             Callabler.row_open_item_with_index(idx);
                         }
                     }
